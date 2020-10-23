@@ -4,7 +4,8 @@ from pyproj import Proj
 import matplotlib.pyplot as plt
 from geometry_msgs.msg import Pose
 from topomap_generator import TopoMapGenerator
-
+from PIL import Image
+import yaml
 
 # https://www.ordnancesurvey.co.uk/documents/product-support/user-guide/os-open-roads-user-guide.pdf
 roads_file = "data/OSOpenRoads_SK.gml"
@@ -79,7 +80,10 @@ def tmerc_to_map(x, y):
     return utm_to_map(x, y)
 
 
-if __name__ == "__main__":    
+if __name__ == "__main__":   
+    topomap_name = "lincoln_toplogy"
+    metricmap_name = "lincoln"
+
     # read roads file
     tree = ET.parse(roads_file)
     root = tree.getroot()
@@ -147,22 +151,62 @@ if __name__ == "__main__":
                     x, y = tmerc_to_map(l[i], l[i+1])
                     pos_list.append([x, y])
                 break  # there is only one anyway
+            # get road name
+            road_name = None
+            for name in road_link.iter("{}name1".format(road_prefix)):
+                road_name = name.text.replace(" ", "_")
+                break  # there is only one anyway
             edges.update({
                 edge_id: {
                     "start": start_id,
                     "end": end_id,
-                    "pos_list": pos_list
+                    "pos_list": pos_list,
+                    "name": road_name
                 }
             })
 
     print("Found {} edges inside area".format(len(edges)))
     # print(edges)
 
+    # generate metric map for it
+    print("Generating metric map...")
+    max_point = [-1000, -1000]
+    min_point = [1000, 1000]
+    for node_id in nodes:
+        if nodes[node_id][0] > max_point[0]:
+            max_point[0] = nodes[node_id][0]
+        elif nodes[node_id][0] < min_point[0]:
+            min_point[0] = nodes[node_id][0]
+        if nodes[node_id][1] > max_point[1]:
+            max_point[1] = nodes[node_id][1]
+        elif nodes[node_id][1] < min_point[1]:
+            min_point[1] = nodes[node_id][1]
+    resolution = 0.5
+    max_dist = [max(abs(max_point[0]), abs(min_point[0])), max(abs(max_point[1]), abs(min_point[1]))]
+    origin = [-max_dist[0], -max_dist[1], 0.]
+    img_size = (int(max_dist[0] * 2 / resolution), int(max_dist[1] * 2 / resolution))
+    # save png
+    img = Image.new(
+        "RGB", img_size, (255, 255, 255))
+    img.save("{}.png".format(metricmap_name), "PNG", quality=20, optimize=True)
+    # save yaml
+    desc = {
+        "image": "{}.png".format(metricmap_name),
+        "resolution": resolution,
+        "origin": origin,
+        "occupied_thresh": 0.65,
+        "free_thresh": 0.196,
+        "negate": 0
+    }
+    with open("{}.yaml".format(metricmap_name), 'w') as f:
+        yaml.dump(desc, f, default_flow_style=False)
+    print("DONE")
 
 
     # generate ROS topological map
+    print("Generating topological map...")
     node_names = {}
-    gen = TopoMapGenerator("lincoln_centre", "lincoln")
+    gen = TopoMapGenerator(topomap_name, metricmap_name)
     for node_id in nodes:
         pose = TopoMapGenerator.pose_skeleton
         pose["position"]["x"] = nodes[node_id][0]
@@ -177,11 +221,13 @@ if __name__ == "__main__":
             n1 = node_names[edges[edge_id]["start"]]
             if edges[edge_id]["end"] in node_names:
                 n2 = node_names[edges[edge_id]["end"]]
+                edge_name = edges[edge_id]["name"]
         
-                gen.add_edge(n1, n2)
+                gen.add_edge(n1, n2, name=edge_name)
 
     gen.save_topomap()
-
+    print("DONE")
+    
 
     ### visualize map
     for edge_id in edges:
